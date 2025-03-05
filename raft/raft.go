@@ -275,6 +275,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	lastIncludedTerm = rf.log[index-rf.X].Term
 	rf.mu.Unlock()
 
+	fmt.Println("Snapshot")
+
 	rf.snapshot = &SnapShot{
 		LastIncludedIndex: lastIncludedIndex,
 		Commands:          mergedCommands,
