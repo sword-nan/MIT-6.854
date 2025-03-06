@@ -39,6 +39,7 @@ type State int
 const (
 	SLEEPTIME     = 10 * time.Millisecond
 	HEARTBEATTIME = 100 * time.Millisecond
+	MONITORTIME   = 10 * time.Millisecond
 )
 
 // State
@@ -154,14 +155,8 @@ func (rf *Raft) GetState() (int, bool) {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (3C).
-	// Example:
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	// e.Encode(rf.state)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
-	raftstate := w.Bytes()
+	var term, voteFor int
+	var log = make([]LogEntry, len(rf.log))
 	var snapshotState []byte
 	if rf.snapshot != nil {
 		snapshotState = rf.encodeSnapshot(
@@ -170,33 +165,53 @@ func (rf *Raft) persist() {
 			rf.snapshot.LastIncludedTerm,
 		)
 	}
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	term = rf.currentTerm
+	voteFor = rf.votedFor
+	copy(log, rf.log)
+	e.Encode(term)
+	e.Encode(voteFor)
+	e.Encode(log)
+	raftstate := w.Bytes()
 	rf.persister.Save(raftstate, snapshotState)
 }
 
 // restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
+func (rf *Raft) readRaftstate(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
 	// Your code here (3C).
-	// Example:
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var (
 		currentTerm int
-		// state       State
-		votedFor int
-		log      []LogEntry
+		votedFor    int
+		log         []LogEntry
 	)
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
 		d.Decode(&log) != nil {
-		DPrintf("readPersist: decode failed")
+		DPrintf("readRaftState: decode failed")
 	} else {
-		// rf.state = state
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+	}
+}
+
+func (rf *Raft) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var snapshot SnapShot
+	if d.Decode(&snapshot) != nil {
+		DPrintf("readSnapshot: decode failed")
+	} else {
+		rf.snapshot = &snapshot
 	}
 }
 
@@ -216,6 +231,15 @@ func (rf *Raft) InstallSnapshot() {
 
 }
 
+func (rf *Raft) encodeSnapshot(lastIncludedIndex int, commands []interface{}, lastIncludedTerm int) []byte {
+	var w bytes.Buffer
+	e := labgob.NewEncoder(&w)
+	e.Encode(lastIncludedIndex)
+	e.Encode(commands)
+	e.Encode(lastIncludedTerm)
+	return w.Bytes()
+}
+
 func (rf *Raft) decodeSnapshot(snapshot []byte) (lastIncludedIndex int, commands []interface{}) {
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
@@ -225,15 +249,6 @@ func (rf *Raft) decodeSnapshot(snapshot []byte) (lastIncludedIndex int, commands
 		log.Fatal("decodeSnapshot: decode failed")
 	}
 	return
-}
-
-func (rf *Raft) encodeSnapshot(lastIncludedIndex int, commands []interface{}, lastIncludedTerm int) []byte {
-	var w bytes.Buffer
-	e := labgob.NewEncoder(&w)
-	e.Encode(lastIncludedIndex)
-	e.Encode(commands)
-	e.Encode(lastIncludedTerm)
-	return w.Bytes()
 }
 
 // 根据日志的 index 映射得到其在 logs 中的下标
@@ -266,17 +281,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if index != lastIncludedIndex {
 		log.Fatal("Snapshot: index != lastIncludedIndex")
 	}
+	rf.mu.Lock()
 	// 将其和之前的快照进行合并
 	if rf.snapshot != nil {
 		mergedCommands = append(mergedCommands, rf.snapshot.Commands...)
 	}
 	mergedCommands = append(mergedCommands, commands...)
 
-	rf.mu.Lock()
 	lastIncludedTerm = rf.log[index-rf.X].Term
 	rf.mu.Unlock()
-
-	fmt.Println("Snapshot")
 
 	rf.snapshot = &SnapShot{
 		LastIncludedIndex: lastIncludedIndex,
@@ -304,6 +317,13 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 		LastIncludedTerm:  lastIncludedTerm,
 	}
 	rf.persist()
+	// rf.applyCh <- ApplyMsg{
+	// 	SnapshotValid: true,
+	// 	Snapshot:      rf.encodeSnapshot(lastIncludedIndex, mergedCommands, lastIncludedTerm),
+	// 	SnapshotTerm:  lastIncludedTerm,
+	// 	SnapshotIndex: lastIncludedIndex,
+	// }
+	// rf.persistCh <- struct{}{}
 }
 
 // example RequestVote RPC arguments structure.
@@ -401,6 +421,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		if !rf.killed() {
 			rf.persist()
+			// rf.persistCh <- struct{}{}
 		}
 	} else {
 		reply.VoteGranted = false
@@ -417,7 +438,7 @@ func (rf *Raft) applyLog() {
 			sliceIndex := rf.logIndex2sliceIndex(rf.lastApplied)
 			log := rf.log[sliceIndex]
 			rf.mu.Unlock()
-			DPrintf("server %d commit/apply index [%d]", rf.me, rf.lastApplied)
+			DPrintf("server %d commit/apply index [%d], log %s", rf.me, rf.lastApplied, &log)
 			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
 				Command:      log.Command,
@@ -560,6 +581,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.log = append(rf.log, entries...)
 		if !rf.killed() {
 			rf.persist()
+			// rf.persistCh <- struct{}{}
 		}
 	}
 
@@ -671,7 +693,7 @@ func (rf *Raft) monitorMatchedIndex() {
 			}
 			rf.mu.Unlock()
 		}
-		time.Sleep(time.Millisecond * 10)
+		time.Sleep(MONITORTIME)
 	}
 }
 
@@ -686,11 +708,13 @@ func (rf *Raft) monitorNextIndex(server int) {
 			rf.mu.Unlock()
 			break
 		}
-		if rf.nextIndex[server] < len(rf.log) {
+		// 需要加上快照中的长度
+		if rf.nextIndex[server] < len(rf.log)+rf.X {
 			term := rf.currentTerm
 			leaderCommit := rf.commitIndex
 			start := rf.nextIndex[server]
-			end := len(rf.log) - 1
+			// 需要利用快照下标进行映射
+			end := len(rf.log) + rf.X - 1
 			key := Pair{start: start, end: end}
 			if _, ok := set[key]; !ok {
 				DPrintf("server %d send the logs from %d to %d to server %d", rf.me, start, end, server)
@@ -699,7 +723,7 @@ func (rf *Raft) monitorNextIndex(server int) {
 			}
 		}
 		rf.mu.Unlock()
-		time.Sleep(time.Millisecond * 20)
+		time.Sleep(MONITORTIME)
 	}
 }
 
@@ -871,6 +895,7 @@ func (rf *Raft) becomeCandidate(term int) {
 	rf.votedFor = rf.me
 	if !rf.killed() {
 		rf.persist()
+		// rf.persistCh <- struct{}{}
 	}
 }
 
@@ -884,6 +909,7 @@ func (rf *Raft) becomeFollower(term int, votedFor int) {
 	rf.votedFor = votedFor
 	if !rf.killed() {
 		rf.persist()
+		// rf.persistCh <- struct{}{}
 	}
 }
 
@@ -930,6 +956,7 @@ func (rf *Raft) election(server, term, lastEntryTerm, lastEntryIndex int, voteCo
 			// 直接 return 会存在内存泄漏
 			// 收集投票的协程无法关闭
 			// voteChan <- false
+			voteMutex.Signal()
 			break
 		}
 		args := RequestVoteArgs{
@@ -948,6 +975,7 @@ func (rf *Raft) election(server, term, lastEntryTerm, lastEntryIndex int, voteCo
 		rf.mu.Lock()
 		if rf.currentTerm != term { // 不是当前任期的投票，废弃 (延迟太高了，收到时已经过了任期)
 			rf.mu.Unlock()
+			voteMutex.Signal()
 			// voteChan <- false // 为了优雅地关闭监听投票的协程
 			break
 		}
@@ -956,6 +984,7 @@ func (rf *Raft) election(server, term, lastEntryTerm, lastEntryIndex int, voteCo
 			// DPrintf("Election: 接收到来自 server %d 的回复，term %d 比 leader %d 的 term %d 大，由 %s 退化为 Follower\n", ii, reply.Term, rf.me, rf.currentTerm, rf.state)
 			rf.becomeFollower(reply.Term, -1)
 			rf.mu.Unlock()
+			voteMutex.Signal()
 			// voteChan <- false
 			break
 		}
@@ -968,15 +997,14 @@ func (rf *Raft) election(server, term, lastEntryTerm, lastEntryIndex int, voteCo
 			rf.mu.Unlock()
 			voteMutex.L.Lock()
 			*voteCount += 1
-			if *voteCount >= len(rf.peers)/2 {
-				voteMutex.Signal()
-			}
 			voteMutex.L.Unlock()
+			voteMutex.Signal()
 			break
 			// voteChan <- true
 		} else {
 			// DPrintf("Term: %v, server %v is not candidate\n", rf.currentTerm, rf.me)
 			rf.mu.Unlock()
+			voteMutex.Signal()
 			break
 			// voteChan <- false
 		}
@@ -985,38 +1013,21 @@ func (rf *Raft) election(server, term, lastEntryTerm, lastEntryIndex int, voteCo
 
 // 收集选票
 // term: 选票任期值
-func (rf *Raft) collectVotes(term int, voteMutex *sync.Cond) {
-	rf.mu.Lock()
-	if rf.state != Candidate {
-		rf.mu.Unlock()
-		return
-	}
-	rf.mu.Unlock()
-
-	voteMutex.L.Lock()
-	voteMutex.Wait() // 内部会调用解锁 Unlock (因此在此之前需要使用 Lock 当被唤醒时也会执行加锁操作)
-
-	rf.mu.Lock()
-	if rf.currentTerm == term && rf.state == Candidate {
-		rf.becomeLeader()
-	}
-	rf.mu.Unlock()
-
-	voteMutex.L.Unlock()
-	// count := 0
-	// for i := 0; i < len(rf.peers)-1; i++ {
-	// 	if val := <-voteChan; val { // 投票成功
-	// 		count++
-	// 		if count >= len(rf.peers)/2 && !rf.killed() {
-	// 			rf.mu.Lock()
-	// 			if rf.currentTerm == term && rf.state == Candidate {
-	// 				rf.becomeLeader()
-	// 			}
-	// 			rf.mu.Unlock()
-	// 		}
-	// 	}
-	// }
-}
+// func (rf *Raft) collectVotes(term int, voteMutex *sync.Cond) {
+// count := 0
+// for i := 0; i < len(rf.peers)-1; i++ {
+// 	if val := <-voteChan; val { // 投票成功
+// 		count++
+// 		if count >= len(rf.peers)/2 && !rf.killed() {
+// 			rf.mu.Lock()
+// 			if rf.currentTerm == term && rf.state == Candidate {
+// 				rf.becomeLeader()
+// 			}
+// 			rf.mu.Unlock()
+// 		}
+// 	}
+// }
+// }
 
 func (rf *Raft) broadcastElection() {
 	rf.mu.Lock()
@@ -1041,7 +1052,27 @@ func (rf *Raft) broadcastElection() {
 		}
 	}
 	// go rf.collectVotes(term, voteChan)
-	go rf.collectVotes(term, voteMutex)
+	for !rf.killed() { // 监听投票
+		voteMutex.L.Lock()
+		if voteCount < len(rf.peers)/2 {
+			voteMutex.Wait()
+		}
+
+		rf.mu.Lock()
+		if rf.currentTerm != term || rf.state != Candidate {
+			rf.mu.Unlock()
+			voteMutex.L.Unlock()
+			break
+		}
+
+		if voteCount >= len(rf.peers)/2 {
+			rf.becomeLeader()
+			rf.mu.Unlock()
+			break
+		}
+		rf.mu.Unlock()
+		voteMutex.L.Unlock()
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -1072,6 +1103,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		})
 		if !rf.killed() {
 			rf.persist()
+			// rf.persistCh <- struct{}{}
 			// go rf.broadcastLogs()
 		}
 		// DPrintf("Term %d, server %d get the command from client. log: %v\n", rf.currentTerm, rf.me, rf.log)
@@ -1170,6 +1202,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.state = Follower
+	// rf.persistCh = make(chan struct{}, 10)
 	rf.heartbeatC = make(chan struct{})
 	// rf.endHeartbeat = make(chan struct{})
 	// rf.applierC = make(chan []LogEntry, 10)
@@ -1182,10 +1215,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		{0, 0, 0},
 	}
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.readRaftstate(persister.ReadRaftState())
+	rf.readSnapshot(persister.ReadSnapshot())
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.applyLog()
+	// go rf.persist()
 	// go rf.applySnapshot()
 	return rf
 }
