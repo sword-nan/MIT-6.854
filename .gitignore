@@ -12,3 +12,5 @@ mrtmp.*
 /main/mrworker
 test-*
 test.txt
+output.txt
+tester

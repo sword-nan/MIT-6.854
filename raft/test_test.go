@@ -1158,11 +1158,12 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	cfg := make_config(t, servers, !reliable, true)
 	defer cfg.cleanup()
 	cfg.begin(name)
-	index := 0
-	cmd := rand.Int()
-	index += 1
-	DPrintf("%d: %v", index, cmd)
-	cfg.one(cmd, servers, true)
+	// index := 0
+	// cmd := rand.Int()
+	// index += 1
+	// DPrintf("%d: %v", index, cmd)
+	// cfg.one(cmd, servers, true)
+	cfg.one(rand.Int(), servers, true)
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
@@ -1175,6 +1176,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 
 		if disconnect {
 			cfg.disconnect(victim)
+			DPrintf("disconnect server %d", victim)
 			cfg.one(rand.Int(), servers-1, true)
 		}
 		if crash {
@@ -1184,11 +1186,11 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 
 		// perhaps send enough to get a snapshot
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
-		DPrintf("nn: %d", nn)
+		// DPrintf("nn: %d", nn)
 		for i := 0; i < nn; i++ {
-			if sender == leader1 {
-				index += 1
-			}
+			// if sender == leader1 {
+			// 	index += 1
+			// }
 			cfg.rafts[sender].Start(rand.Int())
 		}
 
@@ -1197,10 +1199,11 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 			// make sure all followers have caught up, so that
 			// an InstallSnapshot RPC isn't required for
 			// TestSnapshotBasic3D().
-			cmd = rand.Int()
-			index += 1
-			DPrintf("%d: %v", index, cmd)
-			cfg.one(cmd, servers, true)
+			// cmd = rand.Int()
+			// index += 1
+			// DPrintf("%d: %v", index, cmd)
+			// cfg.one(cmd, servers, true)
+			cfg.one(rand.Int(), servers, true)
 		} else {
 			cfg.one(rand.Int(), servers-1, true)
 		}
@@ -1219,6 +1222,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		if crash {
 			cfg.start1(victim, cfg.applierSnap)
 			cfg.connect(victim)
+			DPrintf("connect server %d", victim)
 			cfg.one(rand.Int(), servers, true)
 			leader1 = cfg.checkOneLeader()
 		}
