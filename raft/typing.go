@@ -118,12 +118,6 @@ type LogEntry struct {
 	Command interface{}
 }
 
-type SnapShot struct {
-	LastIncludedIndex int
-	Commands          []interface{}
-	LastIncludedTerm  int
-}
-
 func (l *LogEntry) String() string {
 	return fmt.Sprintf("LogEntry{term: %d, index: %d, command: %v}", l.Term, l.Index, l.Command)
 }
