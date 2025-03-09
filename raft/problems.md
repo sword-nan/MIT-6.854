@@ -31,6 +31,8 @@ bash direct.sh 100 100 3A
 
 ![](./figures/3D.png)
 
+![](./figures/output.png)
+
 ## 问题 1: 之前 leader 开启的协程无法预期关闭
 
 之前的判定方式
